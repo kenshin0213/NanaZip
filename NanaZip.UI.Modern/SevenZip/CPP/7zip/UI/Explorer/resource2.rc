@@ -16,4 +16,8 @@ BEGIN
   IDS_CONTEXT_COMPRESS_TO "Add to {0}"
   IDS_CONTEXT_COMPRESS_EMAIL "Compress and email..."
   IDS_CONTEXT_COMPRESS_TO_EMAIL "Compress to {0} and email"
+  // **************** NanaZip Modification Start ****************
+  IDS_CONTEXT_COMPRESS_EACH_ZIP "Compress to each file/folder name (.zip)"
+  IDS_CONTEXT_COMPRESS_EACH_7Z "Compress to each file/folder name (.7z)"
+  // **************** NanaZip Modification End ****************
 END

@@ -16,6 +16,11 @@
 #include <shobjidl_core.h>
 
 #include <winrt/Windows.Foundation.h>
+#include <algorithm>
+#include <cwctype>
+#include <memory>
+#include <set>
+#include <vector>
 
 #include "../SevenZip/CPP/Common/Common.h"
 #include "../SevenZip/CPP/Windows/DLL.h"
@@ -190,6 +195,8 @@ namespace NanaZip::ShellExtension
             Compress,
             CompressTo7z,
             CompressToZip,
+            CompressEachZip,
+            CompressEach7z,
 
             CompressEmail,
             CompressTo7zEmail,
@@ -203,6 +210,115 @@ namespace NanaZip::ShellExtension
 
             Maximum
         };
+    }
+
+    struct CompressEachThreadParams
+    {
+        std::vector<std::wstring> FilePaths;
+        bool Is7z = false;
+    };
+
+    static DWORD WINAPI CompressEachWorkerThread(LPVOID lpParam)
+    {
+        HMODULE ModuleHandle = nullptr;
+        ::GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(CompressEachWorkerThread),
+            &ModuleHandle);
+
+        {
+            std::unique_ptr<CompressEachThreadParams> Params(
+                static_cast<CompressEachThreadParams*>(lpParam));
+            if (Params)
+            {
+                std::set<std::wstring> PlannedArchives;
+                const std::wstring Extension = Params->Is7z ? L".7z" : L".zip";
+                const wchar_t* ArchiveType = Params->Is7z ? L"7z" : L"zip";
+
+                for (std::wstring ItemPath : Params->FilePaths)
+                {
+                    // 1. 후행 백슬래시 제거 (드라이브 루트 C:\ 등은 보존)
+                    while (ItemPath.length() > 3 &&
+                           (ItemPath.back() == L'\\' || ItemPath.back() == L'/'))
+                    {
+                        ItemPath.pop_back();
+                    }
+
+                    // 2. 디렉터리 여부 판별 (폴더는 온점 보존, 파일만 마지막 확장자 제거)
+                    DWORD Attributes = ::GetFileAttributesW(ItemPath.c_str());
+                    bool IsDirectory =
+                        (Attributes != INVALID_FILE_ATTRIBUTES) &&
+                        ((Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+
+                    size_t SlashPos = ItemPath.find_last_of(L"\\/");
+                    std::wstring ParentDir =
+                        (SlashPos != std::wstring::npos)
+                        ? ItemPath.substr(0, SlashPos + 1)
+                        : std::wstring();
+                    std::wstring ItemName =
+                        (SlashPos != std::wstring::npos)
+                        ? ItemPath.substr(SlashPos + 1)
+                        : ItemPath;
+
+                    std::wstring BaseName = ItemName;
+                    if (!IsDirectory)
+                    {
+                        size_t DotPos = BaseName.find_last_of(L'.');
+                        if (DotPos != std::wstring::npos && DotPos > 0)
+                        {
+                            BaseName = BaseName.substr(0, DotPos);
+                        }
+                    }
+
+                    // 3. 동명 이종 확장자 및 기존 아카이브 충돌 방지 번호 증분
+                    std::wstring ArchiveFileName = BaseName + Extension;
+                    std::wstring FullArchivePath = ParentDir + ArchiveFileName;
+                    std::wstring LowerKey = FullArchivePath;
+                    std::transform(
+                        LowerKey.begin(),
+                        LowerKey.end(),
+                        LowerKey.begin(),
+                        ::towlower);
+
+                    int Counter = 2;
+                    while (PlannedArchives.find(LowerKey) != PlannedArchives.end() ||
+                           ::GetFileAttributesW(FullArchivePath.c_str()) != INVALID_FILE_ATTRIBUTES)
+                    {
+                        ArchiveFileName =
+                            BaseName + L" (" + std::to_wstring(Counter++) + L")" + Extension;
+                        FullArchivePath = ParentDir + ArchiveFileName;
+                        LowerKey = FullArchivePath;
+                        std::transform(
+                            LowerKey.begin(),
+                            LowerKey.end(),
+                            LowerKey.begin(),
+                            ::towlower);
+                    }
+                    PlannedArchives.insert(LowerKey);
+
+                    UStringVector SingleFileNames;
+                    SingleFileNames.Add(ItemPath.c_str());
+
+                    CompressFiles(
+                        ParentDir.c_str(),
+                        ArchiveFileName.c_str(),
+                        ArchiveType,
+                        false,
+                        SingleFileNames,
+                        false,
+                        false,
+                        true);
+                }
+            }
+        }
+
+        --winrt::get_module_lock();
+        if (ModuleHandle)
+        {
+            ::FreeLibraryAndExitThread(ModuleHandle, 0);
+        }
+
+        return 0;
     }
 
     using SubCommandList = std::vector<winrt::com_ptr<IExplorerCommand>>;
@@ -511,6 +627,38 @@ namespace NanaZip::ShellExtension
 
                 break;
             }
+            case CommandID::CompressEachZip:
+            case CommandID::CompressEach7z:
+            {
+                if (FilePaths.size() < 2)
+                {
+                    break;
+                }
+
+                auto Params = std::make_unique<CompressEachThreadParams>();
+                Params->FilePaths = FilePaths;
+                Params->Is7z = (this->m_CommandID == CommandID::CompressEach7z);
+
+                ++winrt::get_module_lock();
+                HANDLE ThreadHandle = ::CreateThread(
+                    nullptr,
+                    0,
+                    CompressEachWorkerThread,
+                    Params.get(),
+                    0,
+                    nullptr);
+                if (ThreadHandle)
+                {
+                    Params.release();
+                    ::CloseHandle(ThreadHandle);
+                }
+                else
+                {
+                    --winrt::get_module_lock();
+                }
+
+                break;
+            }
             case CommandID::HashCRC32:
             case CommandID::HashCRC64:
             case CommandID::HashSHA1:
@@ -712,6 +860,20 @@ namespace NanaZip::ShellExtension
 
             LoadLangOneTime();
 
+            if (NeedExtract && (ContextMenuFlags & NContextMenuFlags::kExtractHereSmart))
+            {
+                UString TranslatedString;
+                LangString(IDS_CONTEXT_EXTRACT_HERE_SMART, TranslatedString);
+                this->m_SubCommands.push_back(
+                    winrt::make<ExplorerCommandBase>(
+                        std::wstring(
+                            TranslatedString.Ptr(),
+                            TranslatedString.Len()),
+                        CommandID::ExtractHereSmart,
+                        ContextMenuElimDup,
+                        ContextMenuWriteZone));
+            }
+
             if (ContextMenuFlags & NContextMenuFlags::kOpen)
             {
                 DWORD FileAttributes = ::GetFileAttributesW(
@@ -733,18 +895,6 @@ namespace NanaZip::ShellExtension
 
             if (NeedExtract)
             {
-                if (ContextMenuFlags & NContextMenuFlags::kTest)
-                {
-                    UString TranslatedString;
-                    LangString(IDS_CONTEXT_TEST, TranslatedString);
-                    this->m_SubCommands.push_back(
-                        winrt::make<ExplorerCommandBase>(
-                            std::wstring(
-                                TranslatedString.Ptr(),
-                                TranslatedString.Len()),
-                            CommandID::Test));
-                }
-
                 if (ContextMenuFlags & NContextMenuFlags::kExtract)
                 {
                     UString TranslatedString;
@@ -773,20 +923,6 @@ namespace NanaZip::ShellExtension
                             ContextMenuWriteZone));
                 }
 
-                if (ContextMenuFlags & NContextMenuFlags::kExtractHereSmart)
-                {
-                    UString TranslatedString;
-                    LangString(IDS_CONTEXT_EXTRACT_HERE_SMART, TranslatedString);
-                    this->m_SubCommands.push_back(
-                        winrt::make<ExplorerCommandBase>(
-                            std::wstring(
-                                TranslatedString.Ptr(),
-                                TranslatedString.Len()),
-                            CommandID::ExtractHereSmart,
-                            ContextMenuElimDup,
-                            ContextMenuWriteZone));
-                }
-
                 if (ContextMenuFlags & NContextMenuFlags::kExtractTo)
                 {
                     UString TranslatedString;
@@ -800,6 +936,18 @@ namespace NanaZip::ShellExtension
                             CommandID::ExtractTo,
                             ContextMenuElimDup,
                             ContextMenuWriteZone));
+                }
+
+                if (ContextMenuFlags & NContextMenuFlags::kTest)
+                {
+                    UString TranslatedString;
+                    LangString(IDS_CONTEXT_TEST, TranslatedString);
+                    this->m_SubCommands.push_back(
+                        winrt::make<ExplorerCommandBase>(
+                            std::wstring(
+                                TranslatedString.Ptr(),
+                                TranslatedString.Len()),
+                            CommandID::Test));
                 }
             }
 
@@ -839,6 +987,33 @@ namespace NanaZip::ShellExtension
                             TranslatedString.Ptr(),
                             TranslatedString.Len()),
                         CommandID::CompressToZip));
+            }
+
+            if (FilePaths.size() >= 2)
+            {
+                if (ContextMenuFlags & NContextMenuFlags::kCompressEachZip)
+                {
+                    UString TranslatedString;
+                    LangString(IDS_CONTEXT_COMPRESS_EACH_ZIP, TranslatedString);
+                    this->m_SubCommands.push_back(
+                        winrt::make<ExplorerCommandBase>(
+                            std::wstring(
+                                TranslatedString.Ptr(),
+                                TranslatedString.Len()),
+                            CommandID::CompressEachZip));
+                }
+
+                if (ContextMenuFlags & NContextMenuFlags::kCompressEach7z)
+                {
+                    UString TranslatedString;
+                    LangString(IDS_CONTEXT_COMPRESS_EACH_7Z, TranslatedString);
+                    this->m_SubCommands.push_back(
+                        winrt::make<ExplorerCommandBase>(
+                            std::wstring(
+                                TranslatedString.Ptr(),
+                                TranslatedString.Len()),
+                            CommandID::CompressEach7z));
+                }
             }
 
             if (ContextMenuFlags & NContextMenuFlags::kCompressEmail)

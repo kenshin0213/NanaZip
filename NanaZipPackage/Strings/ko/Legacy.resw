@@ -601,7 +601,13 @@
     <value>{0}로 압축해서 이메일 보내기</value>
   </data>
   <data name="Resource2331" xml:space="preserve">
-    <value>여기에 압축 풀기 (자동)</value>
+    <value>알아서 풀기(&amp;S)</value>
+  </data>
+  <data name="Resource2332" xml:space="preserve">
+    <value>각각의 파일명/폴더명으로 압축 (.zip)(&amp;Z)</value>
+  </data>
+  <data name="Resource2333" xml:space="preserve">
+    <value>각각의 파일명/폴더명으로 압축 (.7z)(&amp;7)</value>
   </data>
   <data name="Resource2400" xml:space="preserve">
     <value>폴더</value>

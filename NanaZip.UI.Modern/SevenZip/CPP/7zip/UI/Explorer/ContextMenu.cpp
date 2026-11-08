@@ -33,6 +33,13 @@
 #include "ContextMenu.h"
 #include "ContextMenuFlags.h"
 #include "MyMessages.h"
+// **************** NanaZip Modification Start ****************
+#include <algorithm>
+#include <cwctype>
+#include <memory>
+#include <set>
+#include <string>
+// **************** NanaZip Modification End ****************
 
 #include "resource.h"
 
@@ -224,7 +231,11 @@ static const CContextMenuCommand g_Commands[] =
   CMD_REC( kCompressTo7z,       "CompressTo7z",       IDS_CONTEXT_COMPRESS_TO),
   CMD_REC( kCompressTo7zEmail,  "CompressTo7zEmail",  IDS_CONTEXT_COMPRESS_TO_EMAIL),
   CMD_REC( kCompressToZip,      "CompressToZip",      IDS_CONTEXT_COMPRESS_TO),
-  CMD_REC( kCompressToZipEmail, "CompressToZipEmail", IDS_CONTEXT_COMPRESS_TO_EMAIL)
+  CMD_REC( kCompressToZipEmail, "CompressToZipEmail", IDS_CONTEXT_COMPRESS_TO_EMAIL),
+  // **************** NanaZip Modification Start ****************
+  CMD_REC( kCompressEachZip,    "CompressEachZip",    IDS_CONTEXT_COMPRESS_EACH_ZIP),
+  CMD_REC( kCompressEach7z,     "CompressEach7z",     IDS_CONTEXT_COMPRESS_EACH_7Z)
+  // **************** NanaZip Modification End ****************
 };
 
 
@@ -727,6 +738,17 @@ STDMETHODIMP CZipContextMenu::QueryContextMenu(HMENU hMenu, UINT indexMenu,
           specFolder = GetSubFolderNameForExtract(fs2us(fi0.Name));
         specFolder.Add_PathSepar();
 
+        // **************** NanaZip Modification Start ****************
+        if ((contextMenuFlags & NContextMenuFlags::kExtractHereSmart) != 0)
+        {
+          // Extract Here (Smart) - Top priority
+          CCommandMapItem cmi;
+          cmi.Folder = baseFolder;
+          AddCommand(kExtractHereSmart, mainString, cmi);
+          MyInsertMenu(popupMenu, subIndex++, currentCommandID++, mainString, bitmap);
+        }
+        // **************** NanaZip Modification End ****************
+
         if ((contextMenuFlags & NContextMenuFlags::kExtract) != 0)
         {
           // Extract
@@ -744,17 +766,6 @@ STDMETHODIMP CZipContextMenu::QueryContextMenu(HMENU hMenu, UINT indexMenu,
           AddCommand(kExtractHere, mainString, cmi);
           MyInsertMenu(popupMenu, subIndex++, currentCommandID++, mainString, bitmap);
         }
-
-        // **************** NanaZip Modification Start ****************
-        if ((contextMenuFlags & NContextMenuFlags::kExtractHereSmart) != 0)
-        {
-          // Extract Here
-          CCommandMapItem cmi;
-          cmi.Folder = baseFolder;
-          AddCommand(kExtractHereSmart, mainString, cmi);
-          MyInsertMenu(popupMenu, subIndex++, currentCommandID++, mainString, bitmap);
-        }
-        // **************** NanaZip Modification End ****************
 
         if ((contextMenuFlags & NContextMenuFlags::kExtractTo) != 0)
         {
@@ -874,6 +885,28 @@ STDMETHODIMP CZipContextMenu::QueryContextMenu(HMENU hMenu, UINT indexMenu,
       MyInsertMenu(popupMenu, subIndex++, currentCommandID++, s, bitmap);
     }
     #endif
+
+    // **************** NanaZip Modification Start ****************
+    if (_fileNames.Size() >= 2 && !_dropMode)
+    {
+      if ((contextMenuFlags & NContextMenuFlags::kCompressEachZip) != 0)
+      {
+        CCommandMapItem cmi;
+        cmi.Folder = fs2us(folderPrefix);
+        cmi.ArcType = "zip";
+        AddCommand(kCompressEachZip, mainString, cmi);
+        MyInsertMenu(popupMenu, subIndex++, currentCommandID++, mainString, bitmap);
+      }
+      if ((contextMenuFlags & NContextMenuFlags::kCompressEach7z) != 0)
+      {
+        CCommandMapItem cmi;
+        cmi.Folder = fs2us(folderPrefix);
+        cmi.ArcType = "7z";
+        AddCommand(kCompressEach7z, mainString, cmi);
+        MyInsertMenu(popupMenu, subIndex++, currentCommandID++, mainString, bitmap);
+      }
+    }
+    // **************** NanaZip Modification End ****************
   }
 
 
@@ -1234,6 +1267,120 @@ HRESULT CZipContextMenu::InvokeCommandCommon(const CCommandMapItem &cmi)
             );
         break;
       }
+      // **************** NanaZip Modification Start ****************
+      case kCompressEachZip:
+      case kCompressEach7z:
+      {
+        struct CCompressEachParams
+        {
+          UStringVector FileNames;
+          bool Is7z;
+        };
+
+        struct CCompressEachWorker
+        {
+          static DWORD WINAPI ThreadProc(LPVOID lpParam)
+          {
+            HMODULE hModule = NULL;
+            ::GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                reinterpret_cast<LPCWSTR>(&CCompressEachWorker::ThreadProc),
+                &hModule);
+
+            {
+              std::unique_ptr<CCompressEachParams> params(
+                  static_cast<CCompressEachParams *>(lpParam));
+              if (params)
+              {
+                std::set<std::wstring> plannedArchives;
+                const std::wstring ext = params->Is7z ? L".7z" : L".zip";
+                const wchar_t *arcType = params->Is7z ? L"7z" : L"zip";
+
+                for (unsigned i = 0; i < params->FileNames.Size(); ++i)
+                {
+                  std::wstring itemPath(
+                      params->FileNames[i].Ptr(),
+                      params->FileNames[i].Len());
+
+                  while (itemPath.length() > 3 &&
+                         (itemPath.back() == L'\\' || itemPath.back() == L'/'))
+                  {
+                    itemPath.pop_back();
+                  }
+
+                  DWORD attr = ::GetFileAttributesW(itemPath.c_str());
+                  bool isDir = (attr != INVALID_FILE_ATTRIBUTES) &&
+                               ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0);
+
+                  size_t slashPos = itemPath.find_last_of(L"\\/");
+                  std::wstring parentDir = (slashPos != std::wstring::npos)
+                      ? itemPath.substr(0, slashPos + 1)
+                      : std::wstring();
+                  std::wstring itemName = (slashPos != std::wstring::npos)
+                      ? itemPath.substr(slashPos + 1)
+                      : itemPath;
+
+                  std::wstring baseName = itemName;
+                  if (!isDir)
+                  {
+                    size_t dotPos = baseName.find_last_of(L'.');
+                    if (dotPos != std::wstring::npos && dotPos > 0)
+                      baseName = baseName.substr(0, dotPos);
+                  }
+
+                  std::wstring archiveFileName = baseName + ext;
+                  std::wstring fullArchivePath = parentDir + archiveFileName;
+                  std::wstring lowerKey = fullArchivePath;
+                  std::transform(lowerKey.begin(), lowerKey.end(), lowerKey.begin(), ::towlower);
+
+                  int counter = 2;
+                  while (plannedArchives.find(lowerKey) != plannedArchives.end() ||
+                         ::GetFileAttributesW(fullArchivePath.c_str()) != INVALID_FILE_ATTRIBUTES)
+                  {
+                    archiveFileName = baseName + L" (" + std::to_wstring(counter++) + L")" + ext;
+                    fullArchivePath = parentDir + archiveFileName;
+                    lowerKey = fullArchivePath;
+                    std::transform(lowerKey.begin(), lowerKey.end(), lowerKey.begin(), ::towlower);
+                  }
+                  plannedArchives.insert(lowerKey);
+
+                  UStringVector singleItem;
+                  singleItem.Add(itemPath.c_str());
+
+                  CompressFiles(
+                      parentDir.c_str(),
+                      archiveFileName.c_str(),
+                      arcType,
+                      false,
+                      singleItem,
+                      false,
+                      false,
+                      true);
+                }
+              }
+            }
+
+            if (hModule)
+              ::FreeLibraryAndExitThread(hModule, 0);
+
+            return 0;
+          }
+        };
+
+        auto params = std::make_unique<CCompressEachParams>();
+        params->FileNames = _fileNames;
+        params->Is7z = (cmdID == kCompressEach7z);
+
+        HANDLE hThread = ::CreateThread(
+            NULL, 0, &CCompressEachWorker::ThreadProc, params.get(), 0, NULL);
+        if (hThread)
+        {
+          params.release();
+          ::CloseHandle(hThread);
+        }
+        break;
+      }
+      // **************** NanaZip Modification End ****************
       
       case kHash_CRC32:
       case kHash_CRC64:

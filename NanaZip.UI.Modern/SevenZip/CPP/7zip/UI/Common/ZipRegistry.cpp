@@ -12,6 +12,9 @@
 #include "../../../Windows/Synchronization.h"
 
 #include "ZipRegistry.h"
+// **************** NanaZip Modification Start ****************
+#include "../Explorer/ContextMenuFlags.h"
+// **************** NanaZip Modification End ****************
 
 // **************** NanaZip Modification Start ****************
 #ifndef Z7_SFX
@@ -580,7 +583,9 @@ void CContextMenuInfo::Load()
   ExtractOnOpen.Def = false;
   // **************** NanaZip Modification End ****************
 
-  Flags = (UInt32)(Int32)-1;
+  // **************** NanaZip Modification Start ****************
+  Flags = ((UInt32)(Int32)-1) & ~(NContextMenuFlags::kCRC | NContextMenuFlags::kCRC_Cascaded);
+  // **************** NanaZip Modification End ****************
   Flags_Def = false;
   
   CS_LOCK
