@@ -1,4 +1,59 @@
-﻿# ![NanaZip](Assets/NanaZip.png) NanaZip
+# ![NanaZip](Assets/NanaZip.png) NanaZip (Bandizip-Style UX Custom Edition)
+
+> 본 저장소는 공식 [M2Team/NanaZip](https://github.com/M2Team/NanaZip)을 기반으로, **반디집(Bandizip) 스타일의 Windows 탐색기 우클릭 컨텍스트 메뉴 UX**를 적용한 커스텀 포크(Fork) 저장소입니다.
+
+---
+
+## 🇰🇷 주요 변경 사항 (Bandizip UX 개선 내역)
+
+| 기능 | 기존 NanaZip 동작 | 변경 후 동작 |
+| :--- | :--- | :--- |
+| **1. 알아서 풀기 (Extract Smart) 최상단 배치** | 파일 열기, 여기에 풀기 아래쪽에 위치 | 압축 파일 우클릭 시 **알아서 풀기(&S)**를 **최상단(0순위)**에 배치하여 즉시 클릭 가능 (단일 루트 항목은 현재 폴더에, 다중 항목은 압축파일명 폴더를 생성해 해제) |
+| **2. 각각의 파일명/폴더명으로 개별 압축 (.zip / .7z)** | 다중 선택 시 하나의 압축 파일로만 묶음 | 탐색기에서 **2개 이상의 파일/폴더 선택 시** **각각의 파일명/폴더명으로 압축 (.zip)** 및 **(.7z)** 메뉴 노출. 백그라운드 스레드에서 각 항목을 개별 압축 파일로 순차 생성 |
+| **3. CRC / 해시(Hash) 메뉴 기본 숨김** | 모든 파일 우클릭 시 CRC SHA 메뉴 항상 표시 | 기본값에서 CRC SHA 컨텍스트 메뉴를 비활성화하여 우클릭 메뉴를 간소화 (필요 시 NanaZip 설정에서 다시 활성화 가능) |
+
+### 🛠️ 세부 구현 및 안정성 처리
+- **Windows 11/10 모던 셸 확장 & 내부 파일 매니저 동시 지원:** Out-of-proc COM 서버인 [NanaZip.ShellExtension.cpp](NanaZip.UI.Modern/NanaZip.ShellExtension.cpp)와 클래식/내부 컨텍스트 메뉴인 [ContextMenu.cpp](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenu.cpp) 양쪽에 동일하게 반영되었습니다.
+- **COM Surrogate (dllhost.exe) 수명 보호:** 다중 개별 압축 진행 중 dllhost.exe가 언로드되어 작업이 끊기지 않도록 winrt::get_module_lock() 및 GetModuleHandleExW + FreeLibraryAndExitThread 패턴으로 백그라운드 스레드 수명을 안전하게 보호합니다.
+- **경로/파일명 엣지케이스 처리:**
+  - 드라이브 루트(C:\) 보존 및 일반 폴더 끝 구분자 제거
+  - 점이 포함된 폴더명(예: Project.v1.2)이 확장자로 오인되어 잘리지 않도록 파일 속성과 구분하여 처리
+  - 동일한 이름의 압축 파일이 이미 존재할 경우 대소문자 구분 없이 파일명 (2).zip, 파일명 (3).zip 형태로 자동 넘버링
+- 📄 **상세 설계 및 코드 검증 문서:** **[Documents/nanazip_bandizip_ux_verified.md](Documents/nanazip_bandizip_ux_verified.md)**
+
+---
+
+## 📦 다운로드 및 설치 방법 (Windows 10 / 11 x64)
+
+직접 빌드하지 않고 바로 설치하려면 **[Releases 페이지](https://github.com/kenshin0213/NanaZip/releases/latest)**에서 배포용 패키지를 다운로드하세요.
+
+1. **[최신 릴리스(v7.0.1882.0-bandizip-ux)](https://github.com/kenshin0213/NanaZip/releases/tag/v7.0.1882.0-bandizip-ux)**에서 **NanaZip_BandizipUX_x64_Deploy.zip** 파일을 다운로드하여 압축을 풉니다.
+2. 압축을 푼 폴더 안의 **Install-FullPackage.cmd**를 더블클릭하여 실행합니다.
+3. 관리자 권한 승인(UAC) 창에서 **예**를 누르면 아래 과정이 자동으로 진행됩니다:
+   - 서명 인증서(NanaZip_DevCert.cer)를 로컬 컴퓨터 신뢰 저장소(Cert:\LocalMachine\TrustedPeople)에 등록
+   - 정식 MSIX 패키지(NanaZip_BandizipUX_x64.msix)를 C:\Program Files\WindowsApps에 설치
+   - Windows 탐색기(explorer.exe) 재시작 및 우클릭 메뉴 즉시 적용
+
+---
+
+## 📂 수정된 소스 파일 목록 (10개)
+
+- [NanaZip.UI.Modern/NanaZip.ShellExtension.cpp](NanaZip.UI.Modern/NanaZip.ShellExtension.cpp) — Windows 11/10 탐색기 IExplorerCommand 컨텍스트 메뉴 및 개별 압축 워커 스레드 구현
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Common/ZipRegistry.cpp](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Common/ZipRegistry.cpp) — CContextMenuInfo::Load() 기본 플래그에서 kCRC | kCRC_Cascaded 제외
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenu.cpp](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenu.cpp) — 클래식/내부 컨텍스트 메뉴 kExtractHereSmart 최상단 배치 및 개별 압축 구현
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenu.h](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenu.h) — ECommandInternalID 열거형에 kCompressEachToZip, kCompressEachTo7z 추가
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenuFlags.h](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/ContextMenuFlags.h) — 컨텍스트 메뉴 비트 플래그(1 << 16, 1 << 17) 정의
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/resource.h](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/resource.h) — 리소스 ID (2332, 2333) 정의
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/resource2.rc](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/Explorer/resource2.rc) — 기본 영문 문자열 리소스 테이블 추가
+- [NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/FileManager/MenuPage.cpp](NanaZip.UI.Modern/SevenZip/CPP/7zip/UI/FileManager/MenuPage.cpp) — NanaZip 설정 > 컨텍스트 메뉴 항목 체크박스에 개별 압축 옵션 노출
+- [NanaZipPackage/Strings/ko/Legacy.resw](NanaZipPackage/Strings/ko/Legacy.resw) — 한국어 다국어 리소스 (알아서 풀기(&S), 각각의 파일명/폴더명으로 압축 (.zip/.7z))
+- [NanaZipPackage/Strings/en/Legacy.resw](NanaZipPackage/Strings/en/Legacy.resw) — 영어 다국어 리소스 (Resource2332, Resource2333)
+
+---
+
+*(아래는 원본 M2Team/NanaZip 프로젝트의 공식 영문 ReadMe입니다.)*
+
+# ![NanaZip](Assets/NanaZip.png) NanaZip
 
 [![GitHub Actions Build Status](https://github.com/M2Team/NanaZip/actions/workflows/BuildBinaries.yml/badge.svg?branch=master&event=push)](https://github.com/M2Team/NanaZip/actions/workflows/BuildBinaries.yml?query=event%3Apush+branch%3Amaster)
 [![Total Downloads](https://img.shields.io/github/downloads/M2Team/NanaZip/total)](https://github.com/M2Team/NanaZip/releases)
